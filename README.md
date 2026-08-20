@@ -1,4 +1,4 @@
-# Secure CI/CD + GitOps on GCP
+# DevOps CI/CD + GitOps on GCP (ArgoCD, SonarQube, Trivy, Helm)
 
 A production-grade reference implementation for building, scanning, and deploying a Java
 (Spring Boot) service to **Google Kubernetes Engine (GKE)** using **GitHub Actions**,
