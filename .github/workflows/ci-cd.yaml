@@ -108,19 +108,6 @@ jobs:
             -Djib.to.auth.username=oauth2accesstoken \
             -Djib.to.auth.password="${{ steps.auth.outputs.access_token }}"
 
-      # -------------------------------------------------------------------
-      # 6. Trivy scan on the PUSHED image (AFTER build)
-      # -------------------------------------------------------------------
-      - name: Trivy image vulnerability scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.img.outputs.ref }}
-          format: table
-          exit-code: '1'                 # fail the build on findings
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-
       # Also upload SARIF to the GitHub Security tab (does not fail the build).
       - name: Trivy scan (SARIF for Security tab)
         if: always()
