@@ -1,0 +1,84 @@
+// =============================================================================
+// build.gradle  —  Spring Boot app containerized with Jib (no Dockerfile needed)
+// =============================================================================
+plugins {
+    id 'java'
+    id 'org.springframework.boot'            version '3.3.2'
+    id 'io.spring.dependency-management'      version '1.1.6'
+    // Jib builds an OCI image straight from the build, no Docker daemon required.
+    id 'com.google.cloud.tools.jib'           version '3.4.3'
+    // SonarQube scanner plugin — lets you run `./gradlew sonar`.
+    id 'org.sonarqube'                        version '5.1.0.4882'
+}
+
+group   = 'com.example'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly    'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// -----------------------------------------------------------------------------
+// Jib configuration
+// -----------------------------------------------------------------------------
+// The image name and tag are injected from the CI environment so we do NOT
+// hard-code the registry path or the Git SHA here. Locally they default to
+// harmless placeholders.
+//
+//   -Djib.to.image     -> full GAR path, e.g.
+//                         us-central1-docker.pkg.dev/PROJECT/REPO/demo-app
+//   -Djib.to.tags      -> comma separated tags, we pass $GITHUB_SHA in CI
+// -----------------------------------------------------------------------------
+jib {
+    from {
+        // Distroless Java 21 base — small attack surface, no shell.
+        image = 'gcr.io/distroless/java21-debian12:nonroot'
+        platforms {
+            platform {
+                architecture = 'amd64'
+                os = 'linux'
+            }
+        }
+    }
+    to {
+        image = project.findProperty('jib.to.image') ?: 'local/demo-app'
+        tags  = [ (project.findProperty('jib.to.tag') ?: 'latest') ]
+    }
+    container {
+        ports = ['8080']
+        user  = 'nonroot'
+        // Surface the version to the running app via env var.
+        environment = [ 'APP_VERSION': (project.findProperty('jib.to.tag') ?: 'dev') ]
+        // Reproducible builds — fixed creation timestamp.
+        creationTime = 'USE_CURRENT_TIMESTAMP'
+        jvmFlags = ['-XX:MaxRAMPercentage=75.0']
+    }
+}
+
+// -----------------------------------------------------------------------------
+// SonarQube configuration (values can also live in sonar-project.properties)
+// -----------------------------------------------------------------------------
+sonar {
+    properties {
+        property 'sonar.projectKey',  System.getenv('SONAR_PROJECT_KEY') ?: 'demo-app'
+        property 'sonar.host.url',    System.getenv('SONAR_HOST_URL')    ?: 'http://localhost:9000'
+    }
+}

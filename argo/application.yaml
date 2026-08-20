@@ -1,0 +1,42 @@
+# =============================================================================
+# ArgoCD Application — standard (single-app) pattern.
+# ArgoCD watches the Helm chart path in Git and syncs any change (e.g. the
+# image tag bump the CI pipeline commits) to the GKE cluster.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-app
+  namespace: argocd
+  # Keep the app from being pruned accidentally.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    # Point this at your repo. If you use a separate GitOps repo, change the URL.
+    repoURL: https://github.com/OWNER/REPO.git
+    targetRevision: main
+    path: helm/demo-app
+    helm:
+      # Optionally override values here or use a separate values-prod.yaml.
+      valueFiles:
+        - values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-app
+
+  syncPolicy:
+    automated:
+      prune: true       # delete resources removed from Git
+      selfHeal: true    # revert manual drift back to Git state
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

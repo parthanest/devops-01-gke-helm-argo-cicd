@@ -1,0 +1,7 @@
+apiVersion: v2
+name: demo-app
+description: Production-ready Helm chart for the demo Spring Boot service
+type: application
+# Chart version (bump on chart changes) vs appVersion (informational app version)
+version: 0.1.0
+appVersion: "0.0.1"

@@ -1,0 +1,30 @@
+# =============================================================================
+# OPTIONAL: App-of-Apps root application.
+# Apply this ONE application and ArgoCD will discover and manage every child
+# Application manifest under the given path (argo/). Great for scaling to many
+# services. Use EITHER application.yaml (standard) OR this pattern.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-apps
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/OWNER/REPO.git
+    targetRevision: main
+    path: argo            # folder containing child Application manifests
+    directory:
+      recurse: true
+      # Don't let the root try to manage itself.
+      exclude: "app-of-apps.yaml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

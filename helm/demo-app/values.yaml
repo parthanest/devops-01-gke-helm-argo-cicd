@@ -1,0 +1,68 @@
+# =============================================================================
+# Default values for demo-app. The CI pipeline rewrites image.repository and
+# image.tag on every push to main (GitOps), then ArgoCD syncs the change.
+# =============================================================================
+replicaCount: 2
+
+image:
+  # Full Artifact Registry path, e.g.
+  # us-central1-docker.pkg.dev/my-project/containers/demo-app
+  repository: REPLACE_ME
+  # Git SHA — overwritten automatically by the CI pipeline.
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Container port the Spring Boot app listens on.
+containerPort: 8080
+
+service:
+  type: ClusterIP
+  port: 80          # service port
+  targetPort: 8080  # container port
+
+# Resource requests/limits — tune for your workload.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Pod-level security hardening (matches the non-root distroless base image).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532        # 'nonroot' uid in distroless
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Horizontal Pod Autoscaler.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 75
+
+# Kubernetes ServiceAccount. Set annotations for GKE Workload Identity if the
+# app itself needs to call GCP APIs.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Liveness/Readiness probe paths (Spring Boot Actuator).
+probes:
+  livenessPath: /actuator/health/liveness
+  readinessPath: /actuator/health/readiness
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

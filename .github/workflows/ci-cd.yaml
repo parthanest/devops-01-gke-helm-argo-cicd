@@ -1,0 +1,160 @@
+# =============================================================================
+# CI/CD Pipeline: SonarQube -> Jib build/push (GAR) -> Trivy scan -> GitOps bump
+# =============================================================================
+# Trigger: any push to main. Uses GCP Workload Identity Federation (no JSON key).
+# =============================================================================
+name: ci-cd
+
+on:
+  push:
+    branches: [ "main" ]
+
+# Least-privilege token permissions.
+permissions:
+  contents: write      # needed to commit the updated Helm image tag back
+  id-token: write      # needed for GCP Workload Identity Federation (OIDC)
+
+# ---------------------------------------------------------------------------
+# Central configuration. Replace the *_ID / region / repo values or move them
+# into GitHub repository/organization Variables (Settings -> Secrets and
+# variables -> Actions -> Variables) and reference as ${{ vars.NAME }}.
+# ---------------------------------------------------------------------------
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}                 # e.g. my-gcp-project
+  GAR_LOCATION:  ${{ vars.GAR_LOCATION }}                    # e.g. us-central1
+  GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}                 # e.g. containers
+  IMAGE_NAME: demo-app
+  # Workload Identity Federation provider + service account.
+  WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}                  # projects/123.../providers/github
+  WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}    # gha-deployer@proj.iam.gserviceaccount.com
+
+jobs:
+  build-scan-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # -------------------------------------------------------------------
+      # 1. Checkout
+      # -------------------------------------------------------------------
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so SonarQube can compute blame/new code
+
+      # -------------------------------------------------------------------
+      # 2. Set up Java + Gradle
+      # -------------------------------------------------------------------
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Compute the short image reference once and reuse it everywhere.
+      - name: Compute image reference
+        id: img
+        run: |
+          IMAGE="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}"
+          echo "image=${IMAGE}"          >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_SHA}"       >> "$GITHUB_OUTPUT"
+          echo "ref=${IMAGE}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      # -------------------------------------------------------------------
+      # 3. SonarQube scan  (quality/security gate BEFORE building the image)
+      # -------------------------------------------------------------------
+      - name: SonarQube analysis
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN:    ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+        run: |
+          ./gradlew test sonar \
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.token="${SONAR_TOKEN}"
+
+      # Fail the pipeline if the SonarQube Quality Gate is red.
+      - name: SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # -------------------------------------------------------------------
+      # 4. Authenticate to GCP (Workload Identity Federation — keyless)
+      # -------------------------------------------------------------------
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Configure Docker/Jib auth for Artifact Registry
+        run: gcloud auth configure-docker "${GAR_LOCATION}-docker.pkg.dev" --quiet
+
+      # -------------------------------------------------------------------
+      # 5. Build + push image with Jib, tagged with the Git SHA
+      # -------------------------------------------------------------------
+      - name: Build & push image (Jib -> GAR)
+        run: |
+          ./gradlew jib \
+            -Djib.to.image="${{ steps.img.outputs.image }}" \
+            -Djib.to.tag="${{ steps.img.outputs.tag }}" \
+            -Djib.to.auth.username=oauth2accesstoken \
+            -Djib.to.auth.password="${{ steps.auth.outputs.access_token }}"
+
+      # -------------------------------------------------------------------
+      # 6. Trivy scan on the PUSHED image (AFTER build)
+      # -------------------------------------------------------------------
+      - name: Trivy image vulnerability scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.img.outputs.ref }}
+          format: table
+          exit-code: '1'                 # fail the build on findings
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      # Also upload SARIF to the GitHub Security tab (does not fail the build).
+      - name: Trivy scan (SARIF for Security tab)
+        if: always()
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.img.outputs.ref }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      # -------------------------------------------------------------------
+      # 7. GitOps: bump the image tag in the Helm values so ArgoCD syncs it
+      # -------------------------------------------------------------------
+      # This example commits back to THIS repo's helm/ values. For a true
+      # separation of concerns, point this at a dedicated GitOps repo instead
+      # (see README "Option B: dedicated GitOps repo").
+      - name: Update Helm image tag (GitOps)
+        run: |
+          sudo apt-get update && sudo apt-get install -y yq >/dev/null 2>&1 || \
+            (sudo wget -qO /usr/local/bin/yq \
+              https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && \
+             sudo chmod +x /usr/local/bin/yq)
+
+          yq -i '.image.repository = "${{ steps.img.outputs.image }}"' helm/demo-app/values.yaml
+          yq -i '.image.tag        = "${{ steps.img.outputs.tag }}"'   helm/demo-app/values.yaml
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm/demo-app/values.yaml
+          git commit -m "chore(gitops): deploy ${IMAGE_NAME}:${GITHUB_SHA} [skip ci]" || echo "no changes"
+          git push
